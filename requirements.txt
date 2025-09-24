@@ -1,0 +1,10 @@
+openai
+httpx
+pydantic
+fastapi
+psycopg2
+dotenv
+langgraph
+uvicorn
+python-docx
+python-multipart
