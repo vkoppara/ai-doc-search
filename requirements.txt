@@ -8,3 +8,8 @@ langgraph
 uvicorn
 python-docx
 python-multipart
+pypdf
+pdfplumber
+pillow
+pdf2image
+pytesseract

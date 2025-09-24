@@ -5,7 +5,13 @@ from .util.embedding_client import get_embedding, get_embeddings, get_message
 from fastapi import Query
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
-from .utils import extract_text_from_docx, chunk_text
+from .utils import (
+    extract_text_from_docx, 
+    extract_text_from_pdf,
+    extract_rich_pdf_segments,    
+    chunk_text,
+    chunk_segments,
+)
 from .db import get_connection
 import tempfile, os, asyncio
 
@@ -13,23 +19,32 @@ router = APIRouter()
 
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
-    if not file.filename.endswith(('.txt', '.docx')):
-        raise HTTPException(status_code=400, detail="Invalid file type. Only .txt and .docx are allowed.")
+    if not file.filename.lower().endswith(('.txt', '.docx', ".pdf")):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only .txt, .docx and .pdf are allowed.")
     
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+    suffix = os.path.splitext(file.filename)[1] or ".tmp"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
 
     try:
-        if file.filename.endswith('.txt'):
+        lowered = file.filename.lower()
+        if lowered.endswith('.txt'):
             with open(tmp_path, 'r', encoding='utf-8') as f:
                 text = f.read()
-        elif file.filename.endswith('.docx'):
+        elif lowered.endswith('.docx'):
             text = extract_text_from_docx(tmp_path)
-        
-        chunks = chunk_text(text)
-        conn = get_connection()
-        cursor = conn.cursor()
+        elif lowered.endswith(".pdf"):
+            segments = extract_rich_pdf_segments(tmp_path)
+            if segments:
+                chunks = chunk_segments(segments)
+            else:
+                text = extract_text_from_pdf(tmp_path)
+                chunks = chunk_text(text)
+        else:
+            chunks = []
+        if lowered.endswith(('.txt','.docx')):                            
+            chunks = chunk_text(text)   
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("INSERT into documents (filename) VALUES (%s) RETURNING id", (file.filename, ))
@@ -37,9 +52,7 @@ async def upload_file(file: UploadFile = File(...)):
                 vectors = await asyncio.gather(*[get_embedding(chunk) for chunk in chunks])
                 for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
                     cur.execute("INSERT INTO embeddings (document_id, chunk, vector_embedding, chunk_index) VALUES (%s, %s, %s, %s)", (doc_id, chunk, vector, idx))
-        conn.commit()
-        cursor.close()
-        conn.close()
+            conn.commit()        
     finally:
         os.remove(tmp_path)
 
