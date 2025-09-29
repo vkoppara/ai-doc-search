@@ -7,6 +7,8 @@ import io
 from pdf2image import convert_from_path
 import pytesseract
 from PIL import Image
+from app.util.openai_client import get_image_caption
+import fitz
 
 def extract_text_from_docx(file_path: str) -> str:
     doc = Document(file_path)
@@ -43,9 +45,9 @@ def extract_text_from_pdf(file_path: str) -> str:
             pages_text.append(txt)
     return "\n\n".join(pages_text)
 
-def extract_rich_pdf_segments(file_path: str, ocr_threshold: int = 40) -> List[Dict[str, Any]]:
-    segments: List[Dict[str, Any]]= []
-    ocr_candidates = []
+def extract_rich_pdf_segments(file_path: str) -> List[Dict[str, Any]]:
+    segments: List[Dict[str, Any]]= []    
+    fitz_doc = fitz.open(file_path)
     try:
         with pdfplumber.open(file_path) as pdf:
             for page_index, page in enumerate(pdf.pages):                
@@ -54,20 +56,14 @@ def extract_rich_pdf_segments(file_path: str, ocr_threshold: int = 40) -> List[D
                     text = page.extract_text() or ""                    
                 except Exception as ex:                    
                     text = ""
-                raw_text_len = len(text.strip())                
-                if raw_text_len >= ocr_threshold:                    
-                    paras = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]                    
+                if text.strip():
+                    paras = [p.strip() for p in re.split(r"\n{2,}",text) if p.strip()]
                     for para in paras:
-                        segments.append({'type': 'text', 'page': page_num, 'content': para})                    
-                    ocr_candidates.append(page_index)
-                else:        
-                    print(f"added to ocr_candidates - {page_index}")            
-                    ocr_candidates.append(page_index)                    
+                        segments.append({'type': 'text', 'page': page_num, 'content': para})                                    
                 try:                    
                     tables = page.extract_tables() or []
                 except Exception as ex:                    
-                    tables = []
-                has_table_content = False
+                    tables = []                
                 for table in tables:
                     if not table or len(table) < 2:
                         continue
@@ -81,31 +77,113 @@ def extract_rich_pdf_segments(file_path: str, ocr_threshold: int = 40) -> List[D
                             if v_clean:
                                 cells.append(f"{h_clean}:{v_clean}" if h_clean else v_clean)
                         if cells:
-                            has_table_content = True
                             segments.append({'type': 'table_row', 'page': page_num, 'content': ' | '.join(cells)})                                
-                if has_table_content:
+                image_regions = []
+                
+                #try:
+                #    imgs = convert_from_path(file_path, first_page=page_num, last_page=page_num, dpi=200)[0]                                       
+                #except Exception:                                        
+                #    imgs = []
+                #for img in imgs:
+                #    x0= img.get('x0'); y0 = img.get('y0'); x1 = img.get('x1'); y1= img.get('y1')
+                #    name = img.get('name') or img.get('object_type') or 'image'
+                #    image_regions.append({
+                #        'x0': x0, 'y0': y0, 'x1': x1, 'y1': y1,
+                #        'origin': 'bottom-left', 'name': name
+                #    })
+                
+                
+                try:
+                    if fitz_doc is not None:
+                        fitz_page = fitz_doc[page_index]
+                    else:
+                        fitx_page = None
+                    if fitz_page is not None:
+                        raw = fitz_page.get_text("rawdict") or {}
+                        for blk in raw.get('blocks', []):
+                            if blk.get('type') == 1:                                
+                                bbox = blk.get('bbox') or []
+                                print(len(bbox))
+                                if len(bbox) == 4:
+                                    x0, y0, x1, y1 = bbox
+                                    image_regions.append({
+                                        'x0': x0, 'y0': y0, 'x1': x1, 'y1': y1,
+                                        'origin': 'top-left', 'name': 'image'
+                                    })
+                        if not image_regions:
+                            try:
+                                img_list = fitz_page.get_images(full=True) or []                                
+                                for info in img_list:
+                                    xref = info[0]
+                                    rects = fitz_page.get_image_rects(xref) or []                                    
+                                    for r in rects:
+                                        image_regions.append({
+                                            'x0': float(r.x0), 'y0': float(r.y0), 'x1': float(r.x1), 'y1': float(r.y1),
+                                            'origin': 'top-left', 'name': f'image:{xref}'
+                                        })
+                            except Exception:
+                                pass
+                        if not image_regions:
+                            image_regions.append({'x0':0.0, 'y0': 0.0, 'x1': float(page.width), 'y1': float(page.height), 'origin': 'top-left', 'name':'page_full'})
+                except Exception:
+                    pass
+                
+                if image_regions:
                     try:
-                        ocr_candidates.remove(page_index)
-                    except ValueError:
-                        print("Error occurred")
-                        pass
-                    
-        if ocr_candidates:
-            for idx in ocr_candidates:
-                try:                    
-                    img = convert_from_path(file_path, first_page=idx+1, last_page=idx+1)[0]                    
-                    ocr_text = pytesseract.image_to_string(img).strip()
-                    print(f"ocr-text-{ocr_text}")
-                    if ocr_text:
-                        segments.append({'type': 'ocr', 'page': idx+1, 'content': ocr_text})
-                except Exception as ex:
-                    import traceback
-                    traceback.print_exc()
-
-                    print(f"exception occurred 2 - {ex}")
-                    continue
-    except Exception as ex:
-        print(f"exception occurred 3- {ex}")
+                        page_img = convert_from_path(file_path, first_page=page_num, last_page=page_num, dpi=200)[0]
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                        print(e)
+                        page_img = None
+                    for region in image_regions:
+                        x0 = region['x0']; y0= region['y0']; x1 = region['x1']; y1= region['y1']; 
+                        name = region.get('name', 'image')
+                        origin = region.get('origin', 'bottom-left')                    
+                        if page_img and all(v is not None for v in [x0,y0,x1,y1]):
+                            print("i am inside")
+                            try:
+                                pg_w, pg_h = float(page.width), float(page.height)
+                                
+                                fx0 = max(0.0, min(1.0, float(x0)/pg_w))
+                                fy0 = max(0.0, min(1.0, float(y0)/pg_h))
+                                fx1 = max(0.0, min(1.0, float(x1)/pg_w))
+                                fy1 = max(0.0, min(1.0, float(y1)/pg_h))
+                                
+                                img_w, img_h = page_img.size
+                                if origin == 'bottom-left':
+                                    top = int((1.0-fy1) * img_h)
+                                    bottom = int((1.0-fy0) * img_h)
+                                else:
+                                    top = int(fy0 * img_h)
+                                    bottom = int(fy1 * img_h)
+                                left = int(fx0 * img_w)
+                                right = int(fx1 * img_w)
+                                left, right = max(0, min(left, img_w)), max(0, min(right, img_w))
+                                top, bottom = max(0, min(top, img_h)), max(0, min(bottom, img_h))
+                                print(f'right - {right}, left - {left}, bottom -{bottom}, top-{top}')
+                                if right > left and bottom > top:                                                                
+                                    crop = page_img.crop((left, top, right, bottom))
+                                    buf = io.BytesIO()
+                                    crop.save(buf, format='PNG')
+                                    caption = get_image_caption(buf.getvalue())
+                                    print(caption)
+                                    content = f"name={name}, caption={caption}"
+                                    segments.append({'type':'image', 'page':page_num, 'content': content})
+                                else:
+                                    meta = f"name={name}, bbox=({x0},{y0},{x1},{y1})"
+                                    segments.append({'type':'image', 'page':page_num, 'content': meta})
+                            except Exception as e:
+                                import traceback
+                                traceback.print_exc()
+                                meta = f"name={name}, bbox=({x0},{y0},{x1},{y1})"
+                                segments.append({'type':'image', 'page':page_num, 'content': meta})
+                        else:
+                            meta = f"name={name}, bbox=({x0},{y0},{x1},{y1})"
+                            segments.append({'type':'image', 'page':page_num, 'content': meta})
+    except Exception as e:        
+        import traceback
+        traceback.print_exc()
         fallback = extract_text_from_pdf(file_path)
         if fallback.strip():
             segments.append({'type': 'text', 'page': 1, 'content': fallback.strip()})

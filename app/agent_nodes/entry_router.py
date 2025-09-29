@@ -22,7 +22,7 @@ def entry_router(state: AgentState) -> dict:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": query}
             ],
-            model="llama2:7b",
+            model="sonar",
             temperature=0.0,
             max_tokens=4096,
             max_retries=3

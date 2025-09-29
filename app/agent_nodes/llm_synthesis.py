@@ -17,7 +17,7 @@ def llm_synthesis(state: AgentState) -> dict:
         answer = get_chat_content(
             messages=[{"role": "system", "content": system_prompt},
                       {"role": "user", "content": f"User question: {query}\nContext: {step_results}"}],
-            model="llama2:7b", max_retries=3, temperature=0.7, max_tokens=4096
+            model="sonar", max_retries=3, temperature=0.7, max_tokens=4096
         )
     except Exception as e:
         print(f"Error in llm_synthesis: {e}")
