@@ -14,20 +14,26 @@ from .utils import (
 )
 from .db import get_connection
 import tempfile, os, asyncio
+from app.util.chunk_summary import extractive_summary
 
 router = APIRouter()
 
 @router.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(
+    text_extract_only: bool = Query(False),
+    file: UploadFile = File(...)):
     if not file.filename.lower().endswith(('.txt', '.docx', ".pdf")):
         raise HTTPException(status_code=400, detail="Invalid file type. Only .txt, .docx and .pdf are allowed.")
     
     suffix = os.path.splitext(file.filename)[1] or ".tmp"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+    tmp_path = None
+    tmp = None
+    try:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
         tmp.write(await file.read())
         tmp_path = tmp.name
+        tmp.close()  # Ensure file is closed before further use
 
-    try:
         lowered = file.filename.lower()
         if lowered.endswith('.txt'):
             with open(tmp_path, 'r', encoding='utf-8') as f:
@@ -35,7 +41,7 @@ async def upload_file(file: UploadFile = File(...)):
         elif lowered.endswith('.docx'):
             text = extract_text_from_docx(tmp_path)
         elif lowered.endswith(".pdf"):
-            segments = extract_rich_pdf_segments(tmp_path)
+            segments = extract_rich_pdf_segments(tmp_path, text_extract_only)
             if segments:
                 chunks = chunk_segments(segments)
             else:
@@ -44,17 +50,24 @@ async def upload_file(file: UploadFile = File(...)):
         else:
             chunks = []
         if lowered.endswith(('.txt','.docx')):                            
-            chunks = chunk_text(text)   
+            chunks = chunk_text(text) 
+        vectors = await asyncio.gather(*[get_embedding(chunk) for chunk in chunks])
+        summary_text = extractive_summary(chunks, vectors, num_summary_chunks=5)
+        summary_embedding =await get_embedding(summary_text)
         with get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("INSERT into documents (filename) VALUES (%s) RETURNING id", (file.filename, ))
+                cur.execute("INSERT into documents (filename, summary_text, summary_embedding) VALUES (%s, %s, %s) RETURNING id", (file.filename, summary_text, summary_embedding ))
                 doc_id = cur.fetchone()[0]
-                vectors = await asyncio.gather(*[get_embedding(chunk) for chunk in chunks])
+                
                 for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
                     cur.execute("INSERT INTO embeddings (document_id, chunk, vector_embedding, chunk_index) VALUES (%s, %s, %s, %s)", (doc_id, chunk, vector, idx))
             conn.commit()        
     finally:
-        os.remove(tmp_path)
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except PermissionError:
+                pass  # File is still in use, skip deletion
 
     return {"status": "success", "message": f"Uploaded and processed {file.filename}", "document_id": doc_id, "num_chunks": len(chunks)}
 

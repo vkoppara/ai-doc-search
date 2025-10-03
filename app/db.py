@@ -17,6 +17,8 @@ def create_tables():
             CREATE TABLE IF NOT EXISTS documents (
                 id SERIAL PRIMARY KEY,
                 filename TEXT NOT NULL,
+                summary_text TEXT NOT NULL,
+                summary_embedding vector, 
                 uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             """)

@@ -9,6 +9,10 @@ import pytesseract
 from PIL import Image
 from app.util.openai_client import get_image_caption
 import fitz
+import os
+
+
+page_out_dir = os.path.join(os.getcwd(), "data", "image_crops")
 
 def extract_text_from_docx(file_path: str) -> str:
     doc = Document(file_path)
@@ -45,9 +49,10 @@ def extract_text_from_pdf(file_path: str) -> str:
             pages_text.append(txt)
     return "\n\n".join(pages_text)
 
-def extract_rich_pdf_segments(file_path: str) -> List[Dict[str, Any]]:
+def extract_rich_pdf_segments(file_path: str, text_extract_only: bool = False) -> List[Dict[str, Any]]:
     segments: List[Dict[str, Any]]= []    
     fitz_doc = fitz.open(file_path)
+    img_idx = 0
     try:
         with pdfplumber.open(file_path) as pdf:
             for page_index, page in enumerate(pdf.pages):                
@@ -78,6 +83,8 @@ def extract_rich_pdf_segments(file_path: str) -> List[Dict[str, Any]]:
                                 cells.append(f"{h_clean}:{v_clean}" if h_clean else v_clean)
                         if cells:
                             segments.append({'type': 'table_row', 'page': page_num, 'content': ' | '.join(cells)})                                
+                if text_extract_only:
+                    continue                
                 image_regions = []
                 
                 #try:
@@ -141,7 +148,7 @@ def extract_rich_pdf_segments(file_path: str) -> List[Dict[str, Any]]:
                         name = region.get('name', 'image')
                         origin = region.get('origin', 'bottom-left')                    
                         if page_img and all(v is not None for v in [x0,y0,x1,y1]):
-                            print("i am inside")
+                            #print("i am inside")
                             try:
                                 pg_w, pg_h = float(page.width), float(page.height)
                                 
@@ -161,10 +168,14 @@ def extract_rich_pdf_segments(file_path: str) -> List[Dict[str, Any]]:
                                 right = int(fx1 * img_w)
                                 left, right = max(0, min(left, img_w)), max(0, min(right, img_w))
                                 top, bottom = max(0, min(top, img_h)), max(0, min(bottom, img_h))
-                                print(f'right - {right}, left - {left}, bottom -{bottom}, top-{top}')
+                                #print(f'right - {right}, left - {left}, bottom -{bottom}, top-{top}')
                                 if right > left and bottom > top:                                                                
                                     crop = page_img.crop((left, top, right, bottom))
-                                    buf = io.BytesIO()
+                                    img_idx += 1
+                                    fname = f"img_{page_num:04d}_{img_idx:03d}.png"
+                                    out_path = os.path.join(page_out_dir, fname)
+                                    buf = io.BytesIO()                                   
+                                    #crop.save(out_path, format='PNG')
                                     crop.save(buf, format='PNG')
                                     caption = get_image_caption(buf.getvalue())
                                     print(caption)
